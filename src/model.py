@@ -31,10 +31,12 @@ from dataclasses import dataclass, field
 import pandas as pd
 import pulp
 
-# Rows of Production.csv are indexed 0-14; the farm numbers its scenarios
-# non-contiguously. This maps row position to the farm's own scenario number.
-ROW_TO_SCENARIO = {0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 8, 6: 9, 7: 10, 8: 11,
-                   9: 12, 10: 13, 11: 14, 12: 15, 13: 18, 14: 19}
+SCENARIO_COLUMN = "Scénario"
+LABOUR_COST_COLUMN = "Coûts de Main d'œuvre par kg de production"
+
+# A weekly yield below half of both neighbouring weeks is flagged by
+# validate_data() as a probable data-entry error.
+YIELD_DIP_RATIO = 0.5
 
 # Planting can start in any week of the scenario's nominated month.
 PLANTING_WEEKS = {
@@ -72,12 +74,17 @@ class FarmData:
     def n_scenarios(self) -> int:
         return len(self.production)
 
+    def scenario_number(self, row: int) -> int:
+        """The farm's own (non-contiguous) number for a Production.csv row."""
+        return int(self.production[SCENARIO_COLUMN].iloc[row])
+
 
 @dataclass
 class Option:
     """One assignable (greenhouse, scenario, planting week) triple."""
     greenhouse: int                   # 1-based, as the farm numbers them
     scenario_row: int                 # 0-based row in Production.csv
+    scenario: int                     # the farm's scenario number
     start_week: int
     profit: float
     production_kg: float
@@ -85,12 +92,15 @@ class Option:
     pickers_by_week: dict = field(default_factory=dict)
 
     @property
-    def scenario(self) -> int:
-        return ROW_TO_SCENARIO[self.scenario_row]
-
-    @property
     def key(self) -> tuple:
         return (self.greenhouse, self.scenario_row, self.start_week)
+
+
+# Statuses for which a usable plan exists. CBC stopped by a time limit or a
+# relative gap returns an integer-feasible plan that is not proven optimal.
+PROVEN_OPTIMAL = "Optimal"
+OPTIMAL_WITHIN_GAP = "Optimal within gap"
+FEASIBLE_NOT_PROVEN = "Feasible (not proven optimal)"
 
 
 @dataclass
@@ -104,17 +114,40 @@ class PlanResult:
 
     @property
     def feasible(self) -> bool:
-        return self.status == "Optimal"
+        return self.status in (PROVEN_OPTIMAL, OPTIMAL_WITHIN_GAP, FEASIBLE_NOT_PROVEN)
+
+    @property
+    def proven_optimal(self) -> bool:
+        return self.status == PROVEN_OPTIMAL
+
+
+def _read_csv(data_dir: str, name: str) -> pd.DataFrame:
+    return pd.read_csv(os.path.join(data_dir, name))
 
 
 def load_data(data_dir: str = "data") -> FarmData:
-    """Read the four CSVs and return them as one object."""
-    read = lambda name: pd.read_csv(os.path.join(data_dir, name))
+    """Read the four CSVs and return them as one object.
+
+    Charges_var.csv is re-ordered to follow Production.csv by scenario number,
+    so every later lookup by row position refers to the same scenario in both
+    tables whatever order the files are saved in.
+    """
+    production = _read_csv(data_dir, "Production.csv")
+    charges = _read_csv(data_dir, "Charges_var.csv")
+
+    scenarios = production[SCENARIO_COLUMN]
+    if scenarios.duplicated().any():
+        raise ValueError("Production.csv lists the same scenario twice")
+    missing = set(scenarios) - set(charges[SCENARIO_COLUMN])
+    if missing:
+        raise ValueError(f"Charges_var.csv has no row for scenario(s) {sorted(missing)}")
+    charges = charges.set_index(SCENARIO_COLUMN).loc[scenarios].reset_index()
+
     return FarmData(
-        production=read("Production.csv"),
-        prices=read("Prices.csv"),
-        greenhouses=read("Simulation.csv"),
-        charges=read("Charges_var.csv"),
+        production=production,
+        prices=_read_csv(data_dir, "Prices.csv"),
+        greenhouses=_read_csv(data_dir, "Simulation.csv"),
+        charges=charges,
     )
 
 
@@ -136,10 +169,22 @@ def validate_data(data: FarmData) -> list[str]:
     outliers = costs[costs > 10 * costs.median()]
     for row in outliers.index:
         warnings.append(
-            f"Scenario {ROW_TO_SCENARIO[row]} carries a cost of {costs[row]:,.0f} "
+            f"Scenario {data.scenario_number(row)} carries a cost of {costs[row]:,.0f} "
             f"against a median of {costs.median():,.0f} — a sentinel value that "
             f"makes the scenario unselectable rather than a real price."
         )
+
+    weeks = [f"W{w}" for w in PRODUCTION_WEEKS]
+    for row in range(data.n_scenarios):
+        yields = data.production[weeks].iloc[row].to_numpy(dtype=float)
+        for i in range(1, len(yields) - 1):
+            neighbours = min(yields[i - 1], yields[i + 1])
+            if neighbours > 0 and yields[i] < YIELD_DIP_RATIO * neighbours:
+                warnings.append(
+                    f"Scenario {data.scenario_number(row)}, {weeks[i]}: {yields[i]:,.0f} kg/ha "
+                    f"between {yields[i - 1]:,.0f} and {yields[i + 1]:,.0f} — probable "
+                    f"data-entry error, check against the source."
+                )
 
     for crop in ("Framboise", "Mure"):
         zeros = (data.prices[crop] == 0).sum()
@@ -182,13 +227,14 @@ def enumerate_options(data: FarmData) -> list[Option]:
         greenhouse, sector, surface = int(gh["Serre"]), int(gh["Secteur"]), float(gh["Surface"])
 
         for row in range(data.n_scenarios):
-            scenario = ROW_TO_SCENARIO[row]
+            scenario = data.scenario_number(row)
             if not _is_allowed(scenario, sector, surface):
                 continue
 
             crop = data.production["Culture"][row]
             delay = int(data.production["Delai"][row])
-            cost = surface * float(data.charges["Cout"][row])
+            fixed_cost = surface * float(data.charges["Cout"][row])
+            labour_cost_per_kg = float(data.charges[LABOUR_COST_COLUMN][row])
             risk = float(data.charges["Risque/10"][row])
             speed = float(data.charges["Vitesse de main d'œuvre kg/personne/jour"][row])
 
@@ -206,9 +252,10 @@ def enumerate_options(data: FarmData) -> list[Option]:
                     total_kg += yield_kg
                     pickers[calendar_week] = yield_kg / (speed * HARVEST_DAYS_PER_WEEK)
 
+                cost = fixed_cost + labour_cost_per_kg * total_kg
                 options.append(Option(
-                    greenhouse=greenhouse, scenario_row=row, start_week=start_week,
-                    profit=revenue - cost, production_kg=total_kg,
+                    greenhouse=greenhouse, scenario_row=row, scenario=scenario,
+                    start_week=start_week, profit=revenue - cost, production_kg=total_kg,
                     risk=risk, pickers_by_week=pickers,
                 ))
 
@@ -271,6 +318,11 @@ def solve_plan(
                     model += pulp.lpSum(x[o.key] for o in options
                                         if o.greenhouse == other
                                         and o.scenario_row == row) == lead
+            # A scenario the leader cannot take is not shared by the sector, so
+            # no other member may take it either.
+            for o in options:
+                if o.greenhouse in rest and o.scenario_row not in rows:
+                    model += x[o.key] == 0
 
     solver_args = {"msg": verbose}
     if gap is not None:
@@ -279,9 +331,15 @@ def solve_plan(
         solver_args["timeLimit"] = time_limit
 
     model.solve(pulp.PULP_CBC_CMD(**solver_args))
-    status = pulp.LpStatus[model.status]
-    if status != "Optimal":
-        return PlanResult(status=status, profit=None, plan=None)
+    # model.status reads "Optimal" whenever CBC returns an integer solution,
+    # including when it stopped on the time limit or the gap; sol_status tells
+    # a proven optimum apart from a merely feasible plan.
+    if model.sol_status == pulp.LpSolutionOptimal:
+        status = PROVEN_OPTIMAL if gap is None else OPTIMAL_WITHIN_GAP
+    elif model.sol_status == pulp.LpSolutionIntegerFeasible:
+        status = FEASIBLE_NOT_PROVEN
+    else:
+        return PlanResult(status=pulp.LpStatus[model.status], profit=None, plan=None)
 
     chosen = [o for o in options if x[o.key].varValue and x[o.key].varValue > 0.5]
     chosen.sort(key=lambda o: o.greenhouse)
@@ -315,6 +373,8 @@ def solve_plan(
 
 def weekly_labour_profile(result: PlanResult, options: list[Option]) -> pd.Series:
     """Pickers required in each calendar week under a solved plan."""
+    if result.plan is None:
+        raise ValueError(f"no plan to profile: solver status is {result.status!r}")
     chosen_keys = {(r.greenhouse, r.scenario, r.start_week)
                    for r in result.plan.itertuples()}
     weekly: dict[int, float] = {}

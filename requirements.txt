@@ -1,5 +1,8 @@
+# Tested with Python 3.12 (see .python-version). numpy 1.26 and pandas 2.1
+# publish no wheels for Python 3.13+.
 pandas==2.1.1
 numpy==1.26.0
 matplotlib==3.8.0
+# PuLP 4 changed the LpVariable constructor (`cat=` is rejected): keep 2.8.
 pulp==2.8.0
 jupyter==1.0.0

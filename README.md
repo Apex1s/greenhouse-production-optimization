@@ -29,8 +29,8 @@ gets expensive fast: 4.0 costs 14%, 3.0 costs 32%.
 
 **Labour capacity is what actually shapes the farm.** It is the only constraint
 that forces diversification, and it does so without being asked. The
-unconstrained plan uses 2 scenarios; capped at 400 pickers it uses 5; at 200 it
-uses 11. To harvest with a smaller crew the farm must stagger plantings so the
+unconstrained plan uses 2 scenarios; capped at 400 pickers it uses 4; at 250 it
+uses 6. To harvest with a smaller crew the farm must stagger plantings so the
 peaks stop coinciding. The monoculture in the unconstrained answer was never an
 agronomic recommendation — it was an artefact of treating labour as free and
 infinite.
@@ -80,7 +80,7 @@ every greenhouse harvesting in the same calendar week.
 
 ## Data quality
 
-Three defects in the source files silently change the model's behaviour.
+Four defects in the source files silently change the model's behaviour.
 `validate_data()` reports them rather than absorbing them:
 
 - **The 2.87 ha sector-5 ceiling never binds.** The largest greenhouse is 1.9 ha,
@@ -92,6 +92,13 @@ Three defects in the source files silently change the model's behaviour.
   scenarios, not 15.
 - **36 weeks are unpriced** across the two crops. Harvest landing there earns
   nothing, which makes planting-week choice matter more than it appears.
+- **Scenario 3 has a suspicious dip in week 3.** `Production.csv` gives 100
+  kg/ha between 450 and 1,625, where its twin scenarios 1 and 2 give 1,200 and
+  1,100. It is probably a typo for 1,000. The value is used as given until it
+  is confirmed against the source.
+
+`load_data()` joins `Charges_var.csv` to `Production.csv` on the scenario
+number, so the two files can be saved in any row order.
 
 ## Running it
 
@@ -99,12 +106,16 @@ Three defects in the source files silently change the model's behaviour.
 git clone https://github.com/AnasSABBAHI/greenhouse-production-optimization
 cd greenhouse-production-optimization
 
-python -m venv venv
+python -m venv venv              # Python 3.12, see .python-version
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 jupyter lab
+pytest tests                    # after pip install pytest
 ```
+
+The pinned numpy and pandas versions publish no wheels for Python 3.13 and
+later, so create the environment with Python 3.12.
 
 The PuLP pin matters: PuLP 4.0 removed `LpVariable.dicts` and changed the
 `LpVariable` constructor, so an unpinned install will not run this code.
@@ -118,6 +129,11 @@ Labour-constrained solves use a 1% relative MIP gap, well inside the precision
 of the underlying yield forecasts. Without it a sweep takes hours, because the
 labour constraint couples every greenhouse through shared harvest weeks.
 
+`solve_plan` reports `Optimal` only for a proven optimum, `Optimal within gap`
+when CBC closed the requested gap, and `Feasible (not proven optimal)` when it
+stopped on the time limit first. The last kind of point depends on machine
+speed, so the notebook prints it but leaves it off the frontier.
+
 ## Layout
 
 ```
@@ -125,6 +141,7 @@ labour constraint couples every greenhouse through shared harvest weeks.
 ├── docs/projet.pdf     original problem statement
 ├── notebooks/          1_model_and_base_solution, 2_tradeoff_analysis
 ├── src/model.py        data loading, validation, option enumeration, MILP
+├── tests/              pytest suite for the model
 ├── reports/figures/    generated plots
 └── requirements.txt
 ```

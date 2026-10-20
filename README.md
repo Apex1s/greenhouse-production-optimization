@@ -1,5 +1,9 @@
 # Greenhouse Berry Production Optimization
 
+[![Tests](https://github.com/Apex1s/greenhouse-production-optimization/actions/workflows/tests.yml/badge.svg)](https://github.com/Apex1s/greenhouse-production-optimization/actions/workflows/tests.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-black)](LICENSE)
+
 A mixed-integer programme that assigns each of 24 greenhouses one production
 scenario — crop, variety, planting method and planting week — to maximise
 season profit, and then prices what each operational constraint costs.
@@ -103,7 +107,7 @@ number, so the two files can be saved in any row order.
 ## Running it
 
 ```bash
-git clone https://github.com/AnasSABBAHI/greenhouse-production-optimization
+git clone https://github.com/Apex1s/greenhouse-production-optimization
 cd greenhouse-production-optimization
 
 python -m venv venv              # Python 3.12, see .python-version
@@ -125,6 +129,33 @@ The PuLP pin matters: PuLP 4.0 removed `LpVariable.dicts` and changed the
 2. `notebooks/2_tradeoff_analysis.ipynb` — the three frontiers, constraint
    interactions, candidate plans
 
+### From the command line
+
+`src/solve.py` solves any combination of constraints without opening a notebook:
+
+```bash
+python src/solve.py                                         # unconstrained optimum
+python src/solve.py --max-avg-risk 5
+python src/solve.py --max-peak-labour 500 --max-avg-risk 5 --csv plan.csv
+```
+
+```
+status        Optimal within gap
+profit        € 9,620,125
+production    678,805 kg
+mean risk     4.54 / 10
+peak crew     500 pickers
+
+ scenario      crop   variety  start_week                         greenhouses      kg    profit
+        5 Framboise    YAZMIN          14                          22, 23, 24 107,640 1,726,200
+       15 Framboise    YAZMIN          18   3, 4, 5, 8, 9, 10, 11, 13, 19, 20 347,655 4,614,975
+       15 Framboise    YAZMIN          20                                   2  26,950   232,900
+       19      Mure Henrienta          40 1, 6, 7, 12, 14, 15, 16, 17, 18, 21 196,560 3,046,050
+```
+
+`python src/solve.py --help` lists every option. Data-quality warnings go to
+stderr, and the exit code is 1 when no plan satisfies the constraints.
+
 Labour-constrained solves use a 1% relative MIP gap, well inside the precision
 of the underlying yield forecasts. Without it a sweep takes hours, because the
 labour constraint couples every greenhouse through shared harvest weeks.
@@ -141,6 +172,7 @@ speed, so the notebook prints it but leaves it off the frontier.
 ├── docs/projet.pdf     original problem statement
 ├── notebooks/          1_model_and_base_solution, 2_tradeoff_analysis
 ├── src/model.py        data loading, validation, option enumeration, MILP
+├── src/solve.py        command-line front end to the model
 ├── tests/              pytest suite for the model
 ├── reports/figures/    generated plots
 └── requirements.txt

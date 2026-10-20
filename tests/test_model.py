@@ -7,8 +7,15 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from model import (PROVEN_OPTIMAL, SECTORS, enumerate_options, load_data,  # noqa: E402
-                   solve_plan, validate_data, weekly_labour_profile)
+from model import (  # noqa: E402
+    PROVEN_OPTIMAL,
+    SECTORS,
+    enumerate_options,
+    load_data,
+    solve_plan,
+    validate_data,
+    weekly_labour_profile,
+)
 
 DATA_DIR = os.path.join(ROOT, "data")
 

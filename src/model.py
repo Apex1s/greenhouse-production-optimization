@@ -344,9 +344,11 @@ def solve_plan(
     chosen = [o for o in options if x[o.key].varValue and x[o.key].varValue > 0.5]
     chosen.sort(key=lambda o: o.greenhouse)
 
+    sector_of = dict(zip(data.greenhouses["Serre"].astype(int),
+                         data.greenhouses["Secteur"].astype(int), strict=True))
     plan = pd.DataFrame([{
         "greenhouse": o.greenhouse,
-        "sector": int(data.greenhouses.loc[data.greenhouses["Serre"] == o.greenhouse, "Secteur"].iloc[0]),
+        "sector": sector_of[o.greenhouse],
         "scenario": o.scenario,
         "crop": data.production["Culture"][o.scenario_row],
         "variety": data.production["variété 23-24"][o.scenario_row],
